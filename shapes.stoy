@@ -1,0 +1,91 @@
+float rect(vec2 bl, vec2 tr, vec2 uv)
+{
+    float color = step(bl.x, uv.x);
+    float color1 = step(bl.y, uv.y);
+    float color2 = step(uv.x, tr.x);
+    float color3 = step(uv.y, tr.y);
+
+    return color*color1*color2*color3;
+}
+
+float circle(vec2 center, float r, vec2 uv)
+{
+    float dist = length(uv-center);
+    float color = step(dist, r);
+    
+    return color;
+}
+
+float rectSDF(vec2 bl, vec2 tr, vec2 uv)
+{
+    float leftEdge = bl.x - uv.x;
+    float rightEdge = uv.x - tr.x;
+    float topEdge = uv.y - tr.y;
+    float bottomEdge = bl.y - uv.y;
+
+    float color = max(max(leftEdge, rightEdge), max(bottomEdge, topEdge));
+    return color;
+}
+
+float equilateralTriangleSDF(vec2 p, float r, vec2 uv)
+{
+    p = uv - p;
+    const float k = sqrt(3.0);
+    p.x = abs(p.x) - r;
+    p.y = p.y + r/k;
+    if( p.x+k*p.y>0.0 ) p = vec2(p.x-k*p.y,-k*p.x-p.y)/2.0;
+    p.x -= clamp( p.x, -2.0*r, 0.0 );
+    return -length(p)*sign(p.y);
+}
+
+float pentagonSDF(vec2 p, float r, vec2 uv)
+{
+    p = uv - p;
+    const vec3 k = vec3(0.809016994,0.587785252,0.726542528);
+    p.x = abs(p.x);
+    p -= 2.0*min(dot(vec2(-k.x,k.y),p),0.0)*vec2(-k.x,k.y);
+    p -= 2.0*min(dot(vec2( k.x,k.y),p),0.0)*vec2( k.x,k.y);
+    p -= vec2(clamp(p.x,-r*k.z,r*k.z),r);    
+    return length(p)*sign(p.y);
+}
+
+float rectSDF2(vec2 center, vec2 size, vec2 uv)
+{
+    vec2 d = abs(uv-center)-size;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+
+float rectPrismSDF(vec3 center, vec3 size, vec3 uv)
+{
+    vec3 d = abs(uv-center)-size;
+    return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);
+}
+
+float circleSDF(vec2 center, float r, vec2 uv)
+{
+    float color = length(uv - center) -r;
+
+    return color;
+}
+
+float sphereSDF(vec3 center, float r, vec3 uv)
+{
+    float color = length(uv - center) -r;
+
+    return color;
+}
+
+float moonSDF(vec2 center1, vec2 center2, float r1, float r2, vec2 uv){
+
+    float color;
+    float circ1 = circleSDF(center1, .2, uv);
+    float circ2 = circleSDF(center2, .2, uv);
+
+
+    color = step(-min(circ1, -circ2), 0.0);
+    return color; 
+}
+float boxSDF(vec3 p, vec3 center, vec3 halfSize) {
+    vec3 q = abs(p - center) - halfSize;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}

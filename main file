@@ -1,0 +1,199 @@
+#include "shapes.stoy"
+#define MAX_DIST 320.0
+#define MAX_STEPS 170
+#define THRESHOLD 0.01
+#include "lygia/math/rotate3dX.glsl"
+#include "lygia/generative/snoise.glsl"
+
+struct Light {
+    vec3 pos;
+    vec3 color;
+};
+
+struct Material {
+    vec3 ambientColor;
+    vec3 diffuseColor;
+    vec3 specularColor;
+    float shininess;
+};
+
+Material dirt() {
+    vec3 aCol = 0.4 * vec3(0.5, 0.35, 0.2);
+    vec3 dCol = 0.7 * vec3(0.55, 0.4, 0.25);
+    vec3 sCol = 0.3 * vec3(1.0);
+    float a = 16.0;
+    return Material(aCol, dCol, sCol, a);
+}
+
+// const mat3 m = mat3( 0.00,  0.80,  0.60,
+//                     -0.80,  0.36, -0.48,
+//                     -0.60, -0.48,  0.64 );
+
+// float fbm( vec3 p )
+// {
+//     float f;
+//     f  = 0.5000*snoise( p ); p = m*p*2.02;
+//     f += 0.2500*snoise( p ); p = m*p*2.03;
+//     f += 0.1250*snoise( p ); p = m*p*2.01;
+//     f += 0.0625*snoise( p );
+//     return f;
+// }
+
+// vec3 lig = normalize( vec3(0.7,0.4,0.2) );
+
+float sdPlane(vec3 p, vec3 n, float h) {
+  // n must be normalized
+    return dot(p, n)+h;
+}
+
+vec2 scene(vec3 p) {
+    p.y += .1*snoise(.3*p.xz) + .4*snoise(.4*p.xz) + .08*snoise(.2*p.xz)-.3;
+    float d = sdPlane(p, vec3(0.0, 1.0, 0.0), 2.0);
+
+    return vec2(d, 0.0);
+}
+
+vec3 calcNormal(vec3 p) {
+    const float h = 0.00001; // replace by an appropriate value
+    const vec2 k = vec2(1,-1);
+    return normalize(k.xyy*scene(p+k.xyy*h).x+k.yyx*scene(p+k.yyx*h).x+k.yxy*scene(p+k.yxy*h).x+k.xxx*scene(p+k.xxx*h).x);
+}
+
+
+float shadows(vec3 rayOrigin, vec3 light) {
+    float d = 100.0*THRESHOLD;
+    vec3 rayHeading = normalize(light-rayOrigin);
+    float val = 1.0;
+    for(int i = 0; i<MAX_STEPS; i++) {
+        vec3 p = rayOrigin+d*rayHeading;
+        float sd = scene(p).x;
+        if(sd<THRESHOLD) {
+            return 0.0;
+        }
+        val = min(val, 8.0*sd/d);
+        float distToLight = length(light-p);
+        if(distToLight<THRESHOLD) {
+            return val;
+        }
+        d += min(sd, distToLight);
+        if(d>MAX_DIST) {
+            break;
+        }
+    }
+    return 1.0;
+}
+
+vec3 lighting(vec3 p) {
+    Light lights[1] = Light[1]( //
+    Light(vec3(-10., 8., 5.), vec3(1.0)));
+    vec3 color = vec3(0.0);
+    vec3 norm = calcNormal(p);
+    for(int i = 0; i<lights.length(); i++) {
+        vec3 toLight = normalize(lights[i].pos-p);
+        color += shadows(p, lights[i].pos)* //
+            clamp(dot(toLight, norm), 0., 1.)* //
+            lights[i].color;
+    }
+    return color;
+}
+
+// vec4 mapClouds( in vec3 p )
+// {
+// 	float d = 1.0-0.3*abs(2.8 - p.y);
+// 	d -= 1.6 * fbm( p*0.35 );
+
+// 	d = clamp( d, 0.0, 1.0 );
+	
+// 	vec4 res = vec4( d );
+
+// 	res.xyz = mix( 0.8*vec3(1.0,0.95,0.8), 0.2*vec3(0.6,0.6,0.6), res.x );
+// 	res.xyz *= 0.65;
+	
+// 	return res;
+// }
+
+// vec4 raymarchClouds( in vec3 ro, in vec3 rd, in vec3 bcol, float tmax, out float rays, ivec2 px )
+// {
+// 	vec4 sum = vec4(0, 0, 0, 0);
+// 	rays = 0.0;
+    
+// 	float sun = clamp( dot(rd,lig), 0.0, 1.0 );
+// 	float t = 0.1*texelFetch( iChannel0, px&ivec2(255), 0 ).x;
+// 	for(int i=0; i<64; i++)
+// 	{
+// 		if( sum.w>0.99 || t>tmax ) break;
+// 		vec3 pos = ro + t*rd;
+// 		vec4 col = mapClouds( pos );
+
+// 		float dt = max(0.1,0.05*t);
+// 		float h = (2.8-pos.y)/lig.y;
+// 		float c = fbm( (pos + lig*h)*0.35 );
+// 		//kk += 0.05*dt*(smoothstep( 0.38, 0.6, c ))*(1.0-col.a);
+// 		rays += 0.02*(smoothstep( 0.38, 0.6, c ))*(1.0-col.a)*(1.0-smoothstep(2.75,2.8,pos.y));
+	
+		
+// 		col.xyz *= vec3(0.4,0.52,0.6);
+		
+//         col.xyz += vec3(1.0,0.7,0.4)*0.4*pow( sun, 6.0 )*(1.0-col.w);
+		
+// 		col.xyz = mix( col.xyz, bcol, 1.0-exp(-0.0018*t*t) );
+		
+// 		col.a *= 0.5;
+// 		col.rgb *= col.a;
+
+// 		sum = sum + col*(1.0 - sum.a);	
+
+// 		t += dt;//max(0.1,0.05*t);
+// 	}
+//     rays = clamp( rays, 0.0, 1.0 );
+
+// 	return clamp( sum, 0.0, 1.0 );
+// }
+
+
+
+vec3 rayMarch(vec3 rayOrigin, vec3 rayHeading) {
+    float d = 0.0;
+    for(int i = 0; i<MAX_STEPS; i++) {
+        vec3 p = rayOrigin+d*rayHeading;
+        vec2 march = scene(p);
+        float sd = march.x;        
+
+        // vec3 color;
+        // if(p.y>-1.5)
+        // {
+        //     color = vec3(1.0);
+        // }
+        // if(p.y<=-1.5)
+        // {
+        //     color = vec3(.8,.3,.2);
+        // }
+        // if(p.y<=-1.9)
+        // {
+        //     color = vec3(.0,.0,.6);
+        // }
+        vec3 color = vec3(1.0);
+        if(sd<THRESHOLD) {
+            return color*lighting(p);
+        }
+        d += sd;
+        if(d>MAX_DIST) {
+            break;
+        }
+    }
+    return vec3(0,0,1);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    vec2 uv = fragCoord/iResolution.xy;
+    uv -= 0.5;
+    uv.x *= iResolution.x/iResolution.y;
+
+    vec3 rd = normalize(vec3(uv,-1.0));
+    rd = rotate3dX(-0.5)*rd;
+    vec3 ro = vec3(0.0, 3.0, 5.0);
+
+    vec3 col = rayMarch(ro, rd);
+
+    fragColor = vec4(col, 1.0);
+}

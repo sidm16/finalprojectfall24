@@ -1,0 +1,306 @@
+#define MAX_DIST 2000.0
+#define MAX_STEPS 1000
+#define THRESHOLD 0.001
+
+#include "shapes.stoy"
+#include "matrices.stoy"
+#include "lygia/math/rotate3dX.glsl"
+#include "lygia/generative/snoise.glsl"
+
+struct Material {
+    vec3 color;
+    float shininess;
+    float reflectivity;
+};
+
+struct Light {
+    vec3 position;
+    vec3 color;
+};
+
+struct Camera {
+    vec3 position;
+    vec3 target;
+    vec3 up;
+    float fov;
+};
+
+Light light = Light(vec3(100.0, 100.0, 100.0), vec3(1, 0.835, 0.137));
+Camera camera;
+vec3 skyColor = vec3(0.6, 0.8, 1.0);
+
+float smoothMin(float d1, float d2, float k) {
+    float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
+}
+
+mat3 rotationAxisAngleMatrix(vec3 axis, float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    float t = 1.0 - c;
+
+    axis = normalize(axis);
+
+    return mat3(
+        t * axis.x * axis.x + c,
+        t * axis.x * axis.y - s * axis.z,
+        t * axis.x * axis.z + s * axis.y,
+
+        t * axis.x * axis.y + s * axis.z,
+        t * axis.y * axis.y + c,
+        t * axis.y * axis.z - s * axis.x,
+
+        t * axis.x * axis.z - s * axis.y,
+        t * axis.y * axis.z + s * axis.x,
+        t * axis.z * axis.z + c
+    );
+}
+
+mat3 getRotationMatrix(vec3 fromDir, vec3 toDir) {
+    fromDir = normalize(fromDir);
+    toDir = normalize(toDir);
+    float cosTheta = dot(fromDir, toDir);
+    vec3 rotationAxis;
+
+    if (cosTheta > 0.9999) {
+        // Vectors are the same
+        return mat3(1.0);
+    } else if (cosTheta < -0.9999) {
+        // Vectors are opposite
+        rotationAxis = normalize(cross(vec3(0.0, 1.0, 0.0), fromDir));
+        float angle = 3.14159265; // PI radians
+        return rotationAxisAngleMatrix(rotationAxis, angle);
+    } else {
+        rotationAxis = normalize(cross(fromDir, toDir));
+        float angle = acos(cosTheta);
+        return rotationAxisAngleMatrix(rotationAxis, angle);
+    }
+}
+
+float birdSDF(vec3 p, out Material mat) {
+    float t = iTime;
+    float dt = 0.01;
+    float raise = 12.5; // Raises Bird Above Ground
+
+    // Bird's position at time t
+    vec3 birdPos = vec3(sin(t) * 10.0, raise + sin(t * 0.5) * 2.0, t * 5.0);
+
+    // Bird's position at time t + dt
+    vec3 birdPosNext = vec3(sin(t + dt) * 10.0, raise + sin((t + dt) * 0.5) * 2.0, (t + dt) * 5.0);
+
+    // Flight direction
+    vec3 dir = normalize(birdPosNext - birdPos);
+
+    // Rotation matrix to align bird's forward direction with flight direction
+    mat3 birdRotation = getRotationMatrix(vec3(1.0, 0.0, 0.0), dir);
+
+    // Body (Ellipsoid)
+    vec3 bodyScale = vec3(1.0, 0.6, 0.6);
+    vec3 p_local = (p - birdPos) * birdRotation;
+    float body = sdEllipsoid(p_local / bodyScale, vec3(1.0));
+
+    // Head (Sphere)
+    vec3 headPos = birdRotation * vec3(0.8, 0.3, 0.0);
+    float head = sphereSDF((p - birdPos - headPos) * birdRotation, 0.3);
+
+    // Beak (Cone along X-axis)
+    vec3 beakPos = birdRotation * vec3(1.1, 0.3, 0.0);
+    vec3 beakP = (p - birdPos - beakPos) * birdRotation;
+    float beak = sdConeX(beakP, 0.0, 0.4, 0.1, 0.0);
+
+    float wingFlap = sin(t * 6.5) * 0.4;
+
+    // Left Wing
+    vec3 leftWingPos = birdRotation * vec3(-0.2, 0.0, 0.6);
+    vec3 leftWingP = (p - birdPos - leftWingPos) * birdRotation;
+    vec3 leftWingSize = vec3(0.6, 0.05, 0.3);
+    mat3 leftWingRot = rotationX(wingFlap) * rotationY(0.2);
+    leftWingP = leftWingP * leftWingRot;
+    float leftWing = sdEllipsoid(leftWingP, leftWingSize);
+
+    // Right Wing
+    vec3 rightWingPos = birdRotation * vec3(-0.2, 0.0, -0.6);
+    vec3 rightWingP = (p - birdPos - rightWingPos) * birdRotation;
+    vec3 rightWingSize = vec3(0.6, 0.05, 0.3);
+    mat3 rightWingRot = rotationX(-wingFlap) * rotationY(-0.2);
+    rightWingP = rightWingP * rightWingRot;
+    float rightWing = sdEllipsoid(rightWingP, rightWingSize);
+
+    // Combine Everything
+    float bird = smoothMin(body, head, 0.2);
+    bird = smoothMin(bird, beak, 0.1);
+    bird = smoothMin(bird, leftWing, 0.1);
+    bird = smoothMin(bird, rightWing, 0.1);
+
+    // Assign Material
+    mat.color = vec3(0.6, 0.4, 0.2); // Brownish color
+    mat.shininess = 32.0;
+    mat.reflectivity = 0.1;
+
+    return bird;
+}
+
+float groundSDF(vec3 p, out Material mat)
+{
+    float height = 0.0;
+    height += snoise(p.xz * 0.05) * 5.0; // Large-scale features
+    height += snoise(p.xz * 0.2) * 2.0;  // Medium-scale features
+    height += snoise(p.xz * 0.8) * 0.5;  // Small-scale features
+
+    float ground = p.y - height;
+    mat.color = vec3(0.76, 0.70, 0.50); // Sandy color
+    mat.shininess = 8.0;
+    mat.reflectivity = 0.05;
+
+    return ground;
+}
+
+float rockyOutcropSDF(vec3 p) {
+    // Size of rocky outcrop
+    vec3 size = vec3(1.0, 1.5, 1.0);
+
+    // Outcrop location
+    vec3 pos = vec3(5.0, 0.0, 5.0);
+    float d = boxSDF(p - pos, size);
+
+    d -= snoise((p - pos) * 2.0) * 0.3;
+
+    return d;
+}
+
+float sceneSDF(vec3 p, out Material mat) {
+    Material matBird, matGround, matRock;
+
+    float bird = birdSDF(p, matBird);
+    float terrain = groundSDF(p, matGround);
+    float rock = rockyOutcropSDF(p);
+
+    // Assign material to rock
+    matRock.color = vec3(0.5, 0.5, 0.5); // Gray rock color
+    matRock.shininess = 16.0;
+    matRock.reflectivity = 0.1;
+
+    // Combine terrain and rock using min
+    float terrainRock;
+    Material matTerrainRock;
+    if (terrain < rock) {
+        terrainRock = terrain;
+        matTerrainRock = matGround;
+    } else {
+        terrainRock = rock;
+        matTerrainRock = matRock;
+    }
+
+    // Now compare bird and terrainRock
+    float scene;
+    if (bird < terrainRock) {
+        scene = bird;
+        mat = matBird;
+    } else {
+        scene = terrainRock;
+        mat = matTerrainRock;
+    }
+
+    return scene;
+}
+
+vec3 calcNormal(vec3 p) {
+    const float h = 0.0001;
+    Material dummyMat;
+    vec3 n;
+    n.x = sceneSDF(p + vec3(h, 0.0, 0.0), dummyMat) - sceneSDF(p - vec3(h, 0.0, 0.0), dummyMat);
+    n.y = sceneSDF(p + vec3(0.0, h, 0.0), dummyMat) - sceneSDF(p - vec3(0.0, h, 0.0), dummyMat);
+    n.z = sceneSDF(p + vec3(0.0, 0.0, h), dummyMat) - sceneSDF(p - vec3(0.0, 0.0, h), dummyMat);
+    return normalize(n);
+}
+
+float shadows(vec3 ro, vec3 lightDir) {
+    float res = 1.0;
+    float t = THRESHOLD * 1.1;
+    for(int i = 0; i < MAX_STEPS; i++) {
+        vec3 pos = ro + lightDir * t;
+        Material dummyMat;
+        float dist = sceneSDF(pos, dummyMat);
+        if(dist < THRESHOLD) {
+            return 0.0; // In shadow
+        }
+        res = min(res, 8.0 * dist / t);
+        t += dist;
+        if(t > MAX_DIST) break;
+    }
+    return res;
+}
+
+float rayMarch(vec3 ro, vec3 rd, out vec3 p, out Material mat) {
+    float d = 0.0;
+    for (int i = 0; i < MAX_STEPS; i++) {
+        p = ro + rd * d;
+        float dist = sceneSDF(p, mat);
+        if (dist < THRESHOLD) {
+            return d;
+        }
+        d += dist;
+        if (d > MAX_DIST) break;
+    }
+    return -1.0;
+}
+
+vec3 lighting(vec3 p, vec3 rd, Material mat) {
+    vec3 normal = calcNormal(p);
+
+    vec3 ambient = 0.2 * mat.color;
+
+    vec3 lightDir = normalize(light.position - p);
+    float diff = max(dot(normal, lightDir), 0.0);
+
+    float shadow = shadows(p + normal * THRESHOLD * 2.0, lightDir);
+    diff *= shadow;
+
+    vec3 diffuse = diff * mat.color * light.color;
+
+    vec3 viewDir = normalize(camera.position - p);
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), mat.shininess);
+    spec *= shadow;
+    vec3 specular = spec * light.color * mat.reflectivity;
+
+    return ambient + diffuse + specular;
+}
+
+void setupCamera(float t) {
+    float raise = 12.5;
+    vec3 birdPos = vec3(sin(t) * 10.0, raise + sin(t * 0.5) * 2.0, t * 5.0);
+
+    vec3 cameraOffset = vec3(-16.0, 5.0, 9.0);
+    camera.position = birdPos + cameraOffset;
+    camera.target = birdPos + vec3(0.0, 2.0, 0.0); // Look slightly above the bird
+    camera.up = vec3(0.0, 1.0, 0.0);
+    camera.fov = radians(45.0);
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+    float t = iTime;
+
+    setupCamera(t);
+
+    vec2 uv = (fragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
+    vec3 forward = normalize(camera.target - camera.position);
+    vec3 right = normalize(cross(forward, camera.up));
+    vec3 up = cross(right, forward);
+    float focalLength = 1.0 / tan(camera.fov * 0.5);
+    vec3 rd = normalize(uv.x * right + uv.y * up + focalLength * forward);
+
+    vec3 ro = camera.position;
+    vec3 p;
+    Material mat;
+    float dist = rayMarch(ro, rd, p, mat);
+
+    vec3 color;
+    if (dist > 0.0) {
+        color = lighting(p, rd, mat);
+    } else {
+        color = skyColor;
+    }
+
+    fragColor = vec4(color, 1.0);
+}

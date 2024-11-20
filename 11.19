@@ -1,68 +1,57 @@
-#define MAX_DIST 400.0
-#define MAX_STEPS 128
-#define THRESHOLD 0.01
-
+const float dMax = 28.0;
 #include "shapes.stoy"
 #include "matrices.stoy"
 #include "lygia/math/rotate3dX.glsl"
-#include "lygia/generative/snoise.glsl"
 
-struct Material {
-    vec3 ambientColor;
-    vec3 diffuseColor;
-    vec3 specularColor;
-    float alpha; // Shininess
-};
-
-struct Light {
-    vec3 pos;
-    vec3 color;
-};
-
-struct Surface {
-    int id;
-    float sd;
-    Material mat;
-};
-
-Material birdMaterial() {
-    vec3 baseColor = vec3(0.65, 0.4, 0.2); // Brownish
-    return Material(0.2 * baseColor, 0.6 * baseColor,0.2 * vec3(1.0),16.0);
+// Noise Function
+float snoise(vec2 p) {
+    // [Unchanged code]
+    vec2 fracPart = fract(p);
+    vec2 intPart = floor(p);
+    float v = intPart.x + intPart.y * 1000.0;
+    vec4 randVals = vec4(v, v + 1.0, v + 1000.0, v + 1001.0);
+    randVals = fract(100000.0 * sin(randVals * 0.001));
+    fracPart = fracPart * fracPart * (3.0 - 2.0 * fracPart);
+    return 2.0 * (mix(mix(randVals.x, randVals.y, fracPart.x),
+                        mix(randVals.z, randVals.w, fracPart.x), fracPart.y)) - 1.0;
 }
 
-Material groundMaterial() {
-    vec3 baseColor = vec3(0.85, 0.75, 0.6); // Desert/sand
-    return Material(0.2 * baseColor,0.6 * baseColor,0.1 * vec3(1.0),8.0);
+// Terrain Function
+float terrain(vec2 p, int octaves) {
+    // [Unchanged code]
+    float height = 0.0;
+    float weight = 0.5;
+    float frequency = 0.4;
+    
+    for (int i = 0; i < 12; i++) {
+        if (i < octaves) {
+            height += weight * snoise(p * frequency);
+        } else {
+            break;
+        }
+        weight *= 0.5;
+        frequency *= 2.0;
+    }
+    return height;
 }
 
-Material rockMaterial() {
-    vec3 baseColor = vec3(0.4); // Dark gray rock
-    return Material(0.2 * baseColor, 0.6 * baseColor, 0.1 * vec3(1.0), 8.0);
-}
-
+// Smooth Minimum Function
 float smoothMin(float d1, float d2, float k) {
+    // [Unchanged code]
     float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
     return mix(d2, d1, h) - k * h * (1.0 - h);
 }
 
-Surface birdSDF(vec3 p) {
+float birdSDF(vec3 p, vec3 cameraPos, vec3 forward) {
     float t = iTime;
     float dt = 0.01;
-    float raise = 22.5;
+    
+    // Bird's position directly in front of the camera
+    float birdDistance = 5.0; // Distance in front of the camera
+    vec3 birdPos = cameraPos + forward * birdDistance + vec3(1.0,0, 0.0); // Slightly above the camera
 
-    // Bird's position at time t
-    vec3 birdPos = vec3(
-        sin(t) * 10.0,
-        raise + sin(t * 0.5) * 2.0,
-        t * 5.0
-    );
-
-    // Bird's position at time t + dt
-    vec3 birdPosNext = vec3(
-        sin(t + dt) * 10.0,
-        raise + sin((t + dt) * 0.5) * 2.0,
-        (t + dt) * 5.0
-    );
+    // Bird's position at time t + dt (for flight direction)
+    vec3 birdPosNext = cameraPos + forward * birdDistance + vec3(0.0, 1.5, 0.0);
 
     // Flight direction
     vec3 dir = normalize(birdPosNext - birdPos);
@@ -76,6 +65,10 @@ Surface birdSDF(vec3 p) {
 
     // Transform point to bird's space
     vec3 pLocal = birdRotation * (p - birdPos);
+
+    // Scale down the bird
+    float birdScale = 0.3; // Adjust this value to make the bird smaller
+    pLocal /= birdScale;
 
     // Body (Ellipsoid)
     vec3 bodyScale = vec3(1.0, 0.6, 0.6);
@@ -108,188 +101,189 @@ Surface birdSDF(vec3 p) {
     bird = smoothMin(bird, leftWing, 0.1);
     bird = smoothMin(bird, rightWing, 0.1);
 
-    return Surface(1, bird, birdMaterial());
+    // Scale back to world space
+    bird *= birdScale;
+
+    return bird;
 }
 
-Surface groundSDF(vec3 p) {
-    float height = 0.0;
-    height += snoise(p.xz * 0.02) * 15.0; // Large features
-    height += snoise(p.xz * 0.1) * 5.0;   // Medium features
-    height += snoise(p.xz * 0.5) * 2.0;   // Small features
-
-    float ground = 0.1 * (p.y - height);
-
-    return Surface(2, ground, groundMaterial());
-}
-
-
-Surface rockSDF(vec3 p) {
-    vec3 size = vec3(1.0, 1.5, 1.0);
-    vec3 pos = vec3(5.0, 0.0, 5.0);
-    float d = boxSDF(p - pos, size);
-    d -= 0.2* snoise((p - pos) * 2.0) * 0.3;
-
-    return Surface(3, d, rockMaterial());
-}
-
-
-Surface scene(vec3 p) {
-    Surface birdSurface = birdSDF(p);
-    Surface groundSurface = groundSDF(p);
-    Surface rockSurface = rockSDF(p);
-
-    // Combine terrain and rock
-    Surface terrainSurface;
-    if(groundSurface.sd < rockSurface.sd)
-    {
-        terrainSurface = groundSurface;
+// Map Function
+vec2 map(vec3 p, int octaves, vec3 cameraPos, vec3 forward) {
+    float minDist = dMax;
+    float dist;
+    float materialID = -1.0;
+    
+    // Terrain SDF
+    float terrainHeight = terrain(p.xz, octaves);
+    terrainHeight += smoothstep(-0.6, 1.2, terrainHeight);
+    dist = p.y - terrainHeight;
+    if (dist < minDist) {
+        minDist = dist;
+        materialID = 0.0; // Terrain material
     }
-    else
-    {
-        terrainSurface = rockSurface;
-    }
-    // return terrainSurface;
-    // Combine bird and terrain
-    Surface finalSurface;
-    if(birdSurface.sd < terrainSurface.sd)
-    {
-        finalSurface = birdSurface;
-    }
-    else
-    {
-        finalSurface = terrainSurface;;
-    }
-
-    return finalSurface;
-}
-
-vec3 calcNormal(vec3 p) {
-    const float h = THRESHOLD * 2.0;
-    vec3 n;
-    n.x = scene(p + vec3(h, 0.0, 0.0)).sd - scene(p - vec3(h, 0.0, 0.0)).sd;
-    n.y = scene(p + vec3(0.0, h, 0.0)).sd - scene(p - vec3(0.0, h, 0.0)).sd;
-    n.z = scene(p + vec3(0.0, 0.0, h)).sd - scene(p - vec3(0.0, 0.0, h)).sd;
-    return normalize(n);
-}
-
-float shadows(vec3 rayOrigin, Light light) {
-    float d = THRESHOLD * 7.0;
-    vec3 rayDir = normalize(light.pos - rayOrigin);
-    float maxDist = length(light.pos - rayOrigin);
-    float res = 1.0;
-
-    for (int i = 0; i < MAX_STEPS; i++) {
-        vec3 p = rayOrigin + d * rayDir;
-        float sd = scene(p).sd;
-        if (sd < THRESHOLD) {
-            return 0.0;
+    
+    if (terrainHeight < 0.5) {
+        float secondaryHeight = 0.5 * terrain(p.xz * 0.9, 3);
+        dist = p.y - secondaryHeight;
+        if (dist < minDist) {
+            minDist = dist;
+            materialID = 1.0; // Secondary terrain material
         }
-        if (d >= maxDist) {
-            break;
-        }
-        d += sd;
     }
-    return res;
+    
+    // Bird SDF
+    float birdDist = birdSDF(p, cameraPos, forward);
+    if (birdDist < minDist) {
+        minDist = birdDist;
+        materialID = 2.0; // Bird material
+    }
+    
+    return vec2(minDist, materialID);
 }
 
-// float shadows(vec3 rayOrigin, Light light) {
-//     vec3 rayDir = normalize(light.pos - rayOrigin);
-//     float maxDist = length(light.pos - rayOrigin);
-//     float d = THRESHOLD * 10.0;
-//     for(int i = 0; i < MAX_STEPS; i++) {
-//         if (d >= maxDist) {
-//             return 1.0;
-//         }
-//         vec3 p = rayOrigin + d * rayDir;
-//         float sd = scene(p).sd;
-//         if(sd < THRESHOLD) {
-//             return 0.0;
-//         }
-//         d += max(sd, THRESHOLD * 5.0);
-//     }
-//     return 1.0;
-// }
-
-vec3 phong(Light light, Material mat, vec3 p, vec3 normal, vec3 rayDir) {
-    vec3 lightDir = normalize(light.pos - p);
-
-    vec3 ambient = mat.ambientColor;
-
-    float dotLN = max(dot(lightDir, normal), 0.0);
-    vec3 diffuse = mat.diffuseColor * dotLN;
-
-    vec3 reflectDir = reflect(-lightDir, normal);
-    float dotRV = max(dot(reflectDir, -rayDir), 0.0);
-    vec3 specular = mat.specularColor * pow(dotRV, mat.alpha);
-
-    // Combine components
-    vec3 color = ambient + diffuse + specular;
-    return light.color * clamp(color, 0.0, 1.0) * 2.0;
-}
-
-Surface rayMarch(vec3 rayOrigin, vec3 rayDir) {
-    float d = 0.0;
-    Surface surf;
-
-    for (int i = 0; i < MAX_STEPS; i++) {
-        vec3 p = rayOrigin + d * rayDir;
-        surf = scene(p);
-        if (surf.sd < THRESHOLD) {
-            surf.sd = d;
-            return surf;
-        }
-        d += surf.sd;
-        if (d > MAX_DIST) {
+// Cast Ray Function
+vec2 castRay(vec3 ro, vec3 rd, int octaves, vec3 cameraPos, vec3 forward) {
+    const float epsilon = 0.001;
+    float t = 0.0;
+    float h = epsilon * 2.0;
+    float matID = -1.0;
+    
+    for (int i = 0; i < 100; i++) { // Increased steps for accuracy
+        if (abs(h) > epsilon && t < dMax) {
+            vec2 result = map(ro + rd * t, octaves, cameraPos, forward);
+            h = result.x;
+            matID = result.y;
+            t += h;
+        } else {
             break;
         }
     }
-    surf.sd = MAX_DIST;
-    return surf;
+    
+    if (t > dMax) {
+        matID = -1.0;
+    }
+    
+    return vec2(t, matID);
+}
+
+// Normal Calculation Function
+vec3 calcNormal(vec3 p, int octaves, vec3 cameraPos, vec3 forward) {
+    const vec3 offset = vec3(0.002, 0.0, 0.0);
+    float dx = map(p + offset.xyy, octaves, cameraPos, forward).x - map(p - offset.xyy, octaves, cameraPos, forward).x;
+    float dy = map(p + offset.yxy, octaves, cameraPos, forward).x - map(p - offset.yxy, octaves, cameraPos, forward).x;
+    float dz = map(p + offset.yyx, octaves, cameraPos, forward).x - map(p - offset.yyx, octaves, cameraPos, forward).x;
+    return normalize(vec3(dx, dy, dz));
+}
+
+// Shadows Function
+float shadows(vec3 ro, vec3 rd, float tMax, float k, int octaves, vec3 cameraPos, vec3 forward) {
+    float shadow = 1.0;
+    float t = 0.1;
+    
+    for(int i = 0; i < 22; i++) {
+        if(t < tMax) {
+            float h = map(ro + rd * t, octaves, cameraPos, forward).x;
+            shadow = min(shadow, k * h / t);
+            t += h;
+            if (h < 0.001) {
+                return 0.0;
+            }
+        } else {
+            break;
+        }
+    }
+    return clamp(shadow, 0.0, 1.0);
+}
+
+// Rendering Function
+vec3 render(vec3 ro, vec3 rd, vec3 cameraPos, vec3 forward) {
+    const int geoLOD = 4;
+    vec3 finalColor = vec3(0.3, 0.4, 0.6);
+    vec2 rayResult = castRay(ro, rd, geoLOD, cameraPos, forward);
+    
+    vec3 lightDir = normalize(vec3(1.0, 0.5, 0.0));
+    vec3 lightColor = vec3(1.0, 0.9, 0.7);
+    
+    vec3 hitPos = ro + rd * rayResult.x;
+    
+    if (rayResult.y < -0.5) {
+        // Sky
+        float sunIntensity = clamp(dot(rd, lightDir), 0.0, 1.0);
+        finalColor += 0.8 * lightColor * sunIntensity * sunIntensity;
+        
+        float cloudNoise = snoise(hitPos.xz * 0.05);
+        finalColor = mix(finalColor, vec3(1.0, 1.0, 0.8), smoothstep(0.0, 1.5, cloudNoise));
+        return finalColor;
+    }
+    
+    int normalLOD = int(max(2.0, 12.0 - 11.0 * rayResult.x / dMax));
+    vec3 normal = calcNormal(hitPos, normalLOD, cameraPos, forward);
+    
+    if (abs(rayResult.y - 2.0) < 0.1) {
+        // Bird rendering
+        float ambient = 0.1;
+        float diffuse = max(dot(normal, lightDir), 0.0);
+        float specular = pow(max(dot(reflect(-lightDir, normal), -rd), 0.0), 16.0);
+        
+        finalColor = vec3(0.65, 0.4, 0.2); // Bird base color
+        finalColor = finalColor * (ambient + diffuse * 0.6) + vec3(1.0) * specular * 0.2;
+    } else if (rayResult.y > -0.5 && rayResult.y < 0.5) {
+
+        finalColor = mix(vec3(0.4, 0.1, 0.0), vec3(0.7, 0.6, 0.3), step(0.9, normal.y));
+        
+        float terrainDetail = 0.5 * (snoise(hitPos.xy * vec2(2.0, 15.0)) + 1.0);
+        finalColor = mix(vec3(0.6, 0.5, 0.4), finalColor, terrainDetail * smoothstep(0.0, 0.7, normal.y));
+        
+        float ambient = clamp(0.5 + 0.5 * normal.y, 0.0, 1.0);
+        float diffuse = clamp(dot(normal, lightDir), 0.0, 2.0);
+        
+        if (diffuse > 0.05) {
+            diffuse *= shadows(hitPos, lightDir, 8.0, 12.0, geoLOD, cameraPos, forward);
+        }
+        
+        finalColor += (0.4 * ambient) * lightColor;
+        finalColor *= (1.8 * diffuse) * lightColor;
+    } else if (rayResult.y > 0.5) {
+
+        finalColor = mix(vec3(0.3, 0.2, 0.0), vec3(0.7, 0.6, 0.3), normal.y);
+        
+        float ambient = clamp(0.5 + 0.5 * normal.y, 0.0, 1.0);
+        float diffuse = clamp(dot(normal, lightDir), 0.0, 2.0);
+        
+        if (diffuse > 0.05) {
+            diffuse *= shadows(hitPos, lightDir, 8.0, 12.0, geoLOD, cameraPos, forward);
+        }
+        
+        finalColor += (0.4 * ambient) * lightColor;
+        finalColor *= (1.8 * diffuse) * lightColor;
+    }
+    
+    // Fog
+    float fogFactor = exp(-0.005 * rayResult.x * rayResult.x);
+    finalColor = mix(vec3(0.3, 0.3, 0.35), finalColor, fogFactor);
+    
+    return finalColor;
 }
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-    float t = iTime;
-    float raise = 22.5;
-
-    vec3 birdPos = vec3(sin(t) * 10.0,raise + sin(t * 0.5) * 2.0,t * 5.0);
-
-    // Camera Setup
-    vec3 cameraOffset = vec3(-30.0, 20.0, -30.0);
-    vec3 cameraPos = birdPos + cameraOffset;
-    vec3 cameraTarget = birdPos;
-    vec3 cameraUp = vec3(0.0, 1.0, 0.0);
-    float cameraFOV = radians(45.0);
-
-    // Ray Setup
-    vec2 uv = (fragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
-    vec3 forward = normalize(cameraTarget - cameraPos);
-    vec3 right = normalize(cross(forward, cameraUp));
-    vec3 up = cross(right, forward);
-    float focalLength = 1.0 / tan(cameraFOV * 0.5);
-    vec3 rd = normalize(uv.x * right + uv.y * up + focalLength * forward);
-    vec3 ro = cameraPos;
-
-    // Ray Marching
-    Surface surf = rayMarch(ro, rd);
-    vec3 color = vec3(0.3, 0.5, 0.8); // Sky color
-
-    if (surf.sd > MAX_DIST) {
-        fragColor = vec4(color, 1.0);
-        return;
-    }
-
-    // Lighting
-    vec3 p = ro + rd * surf.sd;
-    vec3 norm = calcNormal(p);
-
-    Light light = Light(vec3(100.0, 200.0, 100.0), vec3(1.0, 0.9, 0.7));
-
-    float shadow = shadows(p, light);
-    vec3 phongColor = phong(light, surf.mat, p, norm, rd);
-    color = phongColor * shadow;
-
-    float circle = length(uv)-0.1;
-    vec3 red = vec3(1.0, 0.0, 0.0);
-    color = mix(color, red, step(circle, 0.0));
-    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+    vec2 normalizedPos = 2.0 * (fragCoord.xy / iResolution.xy) - 1.0;
+    normalizedPos.x *= iResolution.x / iResolution.y;
+    
+    float camX = 0.5 * iTime;
+    float camY = 0.0;
+    float camZ = sin(0.1 * iTime);
+    vec3 cameraPos = vec3(camX, camY, camZ);
+    cameraPos.y = terrain(cameraPos.xz, 1) + 3.5;
+    
+    const vec3 up = vec3(0.0, 1.0, 0.0);
+    vec3 lookAt = cameraPos + vec3(1.0, 0.0, 0.0);
+    
+    vec3 forward = normalize(lookAt - cameraPos);
+    vec3 right = normalize(cross(forward, up));
+    vec3 upDir = cross(right, forward);
+    
+    vec3 rayDir = normalize(normalizedPos.x * right + normalizedPos.y * upDir + 2.0 * forward);
+    vec3 finalColor = render(cameraPos, rayDir, cameraPos, forward);
+    
+    fragColor = vec4(finalColor, 1.0);
 }

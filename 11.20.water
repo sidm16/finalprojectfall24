@@ -10,12 +10,10 @@
 
 #define DRAG_MULT 0.38
 #define WATER_DEPTH 0.3
-#define WATER_LEVEL .35 // New macro to control water elevation
+#define WATER_LEVEL .35
 #define ITERATIONS_RAYMARCH 12
 #define ITERATIONS_NORMAL 36
 
-// Removed the NormalizedMouse macro
-// #define NormalizedMouse (iMouse.xy / iResolution.xy)
 
 float cnoise(vec2 p) {
     vec2 fracPart = fract(p);
@@ -51,11 +49,14 @@ float smoothMin(float d1, float d2, float k) {
 }
 
 float birdSDF(vec3 p, vec3 cameraPos, vec3 forward) {
-    float t = iTime;
+    float t = 2.0 * iTime;
     float dt = 0.01;
     
     float birdDistance = 1.0;
-    vec3 birdPos = cameraPos + forward * birdDistance + vec3(1.0, -0.5, -0.3);
+    vec3 birdPos = ( cameraPos) + forward * birdDistance + vec3(1.0,-.5, -0.3);
+    birdPos.x += .3 * sin(cameraPos.x) * cos(cameraPos.x);
+    birdPos.y += .2 * sin(cameraPos.x) * cos(cameraPos.x);
+    birdPos.z -= .05 * sin(cameraPos.x) * cos(cameraPos.x);
 
     vec3 birdPosNext = cameraPos + forward * birdDistance + vec3(0.0, 1.5, 0.0);
 
@@ -69,7 +70,7 @@ float birdSDF(vec3 p, vec3 cameraPos, vec3 forward) {
 
     vec3 pLocal = birdRotation * (p - birdPos);
 
-    float birdScale = 0.3;
+    float birdScale = 0.2;
     pLocal /= birdScale;
 
     vec3 bodyScale = vec3(1.0, 0.6, 0.6);
@@ -181,7 +182,7 @@ float intersectPlane(vec3 origin, vec3 direction, vec3 point, vec3 normal) {
   return clamp(dot(point - origin, normal) / dot(direction, normal), -1.0, 9991999.0); 
 }
 
-vec3 extra_cheap_atmosphere(vec3 raydir, vec3 sundir) {
+vec3 atmosphere(vec3 raydir, vec3 sundir) {
   float special_trick = 1.0 / (raydir.y * 1.0 + 0.1);
   float special_trick2 = 1.0 / (sundir.y * 11.0 + 1.0);
   float raysundt = pow(abs(dot(sundir, raydir)), 2.0);
@@ -199,14 +200,14 @@ vec3 getSunDirection() {
 }
 
 vec3 getAtmosphere(vec3 dir) {
-   return extra_cheap_atmosphere(dir, getSunDirection()) * 0.5;
+   return atmosphere(dir, getSunDirection()) * 0.5;
 }
 
 float getSun(vec3 dir) { 
   return pow(max(0.0, dot(dir, getSunDirection())), 720.0) * 210.0;
 }
 
-vec3 aces_tonemap(vec3 color) {  
+vec3 colorAdjust(vec3 color) { //Used at end to fix color
   mat3 m1 = mat3(
     0.59719, 0.07600, 0.02840,
     0.35458, 0.90834, 0.13383,
@@ -223,7 +224,7 @@ vec3 aces_tonemap(vec3 color) {
   return pow(clamp(m2 * (a / b), 0.0, 1.0), vec3(1.0 / 2.2));  
 }
 
-vec2 map(vec3 p, int octaves, vec3 cameraPos, vec3 forward) {
+vec2 map(vec3 p, int octaves, vec3 cameraPos, vec3 forward) { // Creates terrain
     float minDist = MAX_DIST;
     float dist;
     float materialID = -1.0;
@@ -236,9 +237,9 @@ vec2 map(vec3 p, int octaves, vec3 cameraPos, vec3 forward) {
         materialID = MATERIAL_TERRAIN;
     }
     
-    if (p.y < WATER_LEVEL) { // Changed from p.y < 0.0 to p.y < WATER_LEVEL
+    if (p.y < WATER_LEVEL) { 
         float oceanHeight = getwaves(p.xz, ITERATIONS_RAYMARCH) * WATER_DEPTH;
-        dist = p.y - (WATER_LEVEL - oceanHeight); // Adjusted for WATER_LEVEL
+        dist = p.y - (WATER_LEVEL - oceanHeight); 
         if (dist < minDist) {
             minDist = dist;
             materialID = MATERIAL_OCEAN;
@@ -370,15 +371,10 @@ vec3 render(vec3 ro, vec3 rd, vec3 cameraPos, vec3 forward) {
         
         finalColor = waterColor;
     }
+    // Fog
+    float fogFactor = exp(-0.015 * rayResult.x * rayResult.x);
 
-    // Reduced Fog Effect
-    // Original: float fogFactor = exp(-0.035 * rayResult.x * rayResult.x);
-    // Reduced the exponent to make fog less dense
-    float fogFactor = exp(-0.015 * rayResult.x * rayResult.x); // Reduced from 0.035 to 0.015
-
-    // Original: finalColor = mix(vec3(0.3, 0.3, 0.35), finalColor, fogFactor);
-    // Adjusted the mix factor to blend less with the fog color
-    finalColor = mix(vec3(0.3, 0.3, 0.35), finalColor, fogFactor); // Multiplied fogFactor to retain more of the scene color
+    finalColor = mix(vec3(0.3, 0.3, 0.35), finalColor, fogFactor);
     
     return finalColor;
 }
@@ -388,11 +384,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     normalizedPos.x *= iResolution.x / iResolution.y;
 
     vec3 ray = getRay(fragCoord);
-    vec3 ro = vec3(iTime * 0.2, 1.5, 1.0);
+    vec3 ro = vec3(5.0 * iTime * 0.2, 1.5, 1.0);
     vec3 rd = ray;
 
-    vec3 cameraPos = ro;
-    cameraPos.y = terrain(cameraPos.xz, 1) + 2.0; // Increased from 1.5 to 2.0 to ensure camera is above WATER_LEVEL
+    vec3 cameraPos = ro + vec3(.2 * sin(iTime), .2 * sin(iTime), .2 * cos(iTime));
+    cameraPos.y = terrain(cameraPos.xy - vec2(0,1), 1) + 2.5;
 
     vec3 forward = normalize(vec3(1.0, 0.0, 0.0));
     vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
@@ -402,8 +398,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     
     vec3 finalColor = render(cameraPos, rd, cameraPos, forward);
     
-    finalColor = aces_tonemap(finalColor * 2.0);
-    
+    finalColor = colorAdjust(finalColor * 2.0);
+
     fragColor = vec4(finalColor, 1.0);
 }
-

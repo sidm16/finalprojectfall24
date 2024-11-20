@@ -89,3 +89,47 @@ float boxSDF(vec3 p, vec3 center, vec3 halfSize) {
     vec3 q = abs(p - center) - halfSize;
     return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
+
+float cylinderSDF(vec3 a, vec3 b, float r, vec3 p) {
+    vec3 pa = p - a;
+    vec3 ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
+float boxSDF(vec3 p, vec3 b) {
+    vec3 d = abs(p) - b;
+    float outsideDist = length(max(d, 0.0));
+    float insideDist = min(max(d.x, max(d.y, d.z)), 0.0);
+    return outsideDist + insideDist;
+}
+
+float sdEllipsoid(vec3 p, vec3 r) {
+    return (length(p / r) - 1.0) * min(min(r.x, r.y), r.z);
+}
+
+float sdCone(vec3 p, float h, float r1, float r2) {
+    vec2 q = vec2(length(p.xz), p.y);
+    float k = (r2 - r1) / h;
+    float c = length(q) - r1 - k * q.y;
+    float s = length(q - vec2(max(c, 0.0), 0.0));
+    return c > 0.0 ? s : max(q.y - h, -q.y);
+}
+
+float sdConeX(vec3 p, float x0, float x1, float r0, float r1) {
+    float h = x1 - x0;
+    vec2 q = vec2(length(p.yz), p.x - x0);
+    float k = (r1 - r0) / h;
+    float c = length(q) - r0 - k * q.y;
+    float s = length(q - vec2(max(c, 0.0), 0.0));
+    float y = q.y - h;
+    return c > 0.0 ? s : max(y, -q.y);
+}
+
+float sphereSDF(vec3 p, float r) {
+    return length(p) - r;
+}
+float sdPlane(vec3 p, vec3 n, float h) {
+  // n must be normalized
+    return dot(p, n)+h;
+}
